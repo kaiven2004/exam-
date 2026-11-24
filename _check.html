@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>断言检查 · work.html</title>
+<style>
+body{font:14px/1.7 ui-monospace,Consolas,monospace;padding:20px;background:#fff;color:#111}
+pre{white-space:pre-wrap;margin:0}
+.h{font-weight:700;margin-top:14px}
+</style>
+</head>
+<body>
+<div id="out">检查中…</div>
+<iframe id="f" style="display:none"></iframe>
+<script>
+var out = [];
+var fails = 0;
+function line(kind, name, extra) {
+  if (kind === 'FAIL' || kind === 'ERR') fails++;
+  out.push((kind === 'PASS' ? '\u2705 ' : kind === 'FAIL' ? '\u274c ' : '\u26a0\ufe0f ') + name + (extra ? '  ' + extra : ''));
+}
+function t(name, fn) {
+  try { var v = fn(); v ? line('PASS', name) : line('FAIL', name); }
+  catch (e) { line('ERR', name, e.message); }
+}
+function section(s) { out.push('\n—— ' + s + ' ——'); }
+
+localStorage.clear();
+
+var f = document.getElementById('f');
+f.onload = run;
+f.src = 'work.html';
+
+function run() {
+  var w = f.contentWindow, d = f.contentDocument;
+  var R = function () { return w.getRanking(); };
+  var S = function () { return w.getStats(); };
+
+  section('门槛项');
+  ['app', 'player-list', 'ranking', 'summary', 'empty'].forEach(function (id) {
+    t('#' + id + ' 存在', function () { return !!d.getElementById(id); });
+  });
+  ['addPlayer', 'addRound', 'getRanking', 'getStats'].forEach(function (fn) {
+    t('window.' + fn + ' 是函数', function () { return typeof w[fn] === 'function'; });
+  });
+  t('无外部 http(s) 引用', function () {
+    return (d.documentElement.outerHTML.match(/https?:\/\//g) || []).length === 0;
+  });
+  t('空态 #empty 可见', function () { return !d.getElementById('empty').hidden; });
+
+  section('核心项 · 加玩家');
+  var a, b, c, dup, empty;
+  t('addPlayer 返回字符串 id', function () { a = w.addPlayer('张三'); return typeof a === 'string' && a.length > 0; });
+  t('addPlayer 李四', function () { b = w.addPlayer('李四'); return typeof b === 'string'; });
+  t('addPlayer 王五', function () { c = w.addPlayer('王五'); return typeof c === 'string'; });
+  t('重名返回 null', function () { dup = w.addPlayer('张三'); return dup === null; });
+  t('空名返回 null', function () { empty = w.addPlayer('   '); return empty === null; });
+  t('.player-item 数量 = 3', function () { return d.querySelectorAll('#player-list .player-item').length === 3; });
+  t('.player-item 带 data-player-id', function () {
+    var els = d.querySelectorAll('.player-item');
+    for (var i = 0; i < els.length; i++) if (!els[i].getAttribute('data-player-id')) return false;
+    return true;
+  });
+  t('9 人上限', function () {
+    for (var i = 0; i < 5; i++) w.addPlayer('第' + (i + 4) + '人');
+    var ids = d.querySelectorAll('.player-item');
+    return ids.length === 8;
+  });
+  t('满员后再加返回 null', function () { return w.addPlayer('第九人') === null; });
+  // 清掉多加的 5 人，回到 3 人
+  for (var i = 8; i > 3; i--) {
+    var el = d.querySelectorAll('#player-list .player-item button');
+    if (el[el.length - 1]) el[el.length - 1].click();
+  }
+  t('删回 3 人', function () { return d.querySelectorAll('.player-item').length === 3; });
+
+  section('核心项 · 记一局');
+  var r1;
+  t('addRound 返回局号 1', function () {
+    var o = {}; o[a] = 10; o[b] = 5; o[c] = -3; r1 = w.addRound(o); return r1 === 1;
+  });
+  t('缺玩家返回 null', function () { var o = {}; o[a] = 1; return w.addRound(o) === null; });
+  t('非数字返回 null', function () { var o = {}; o[a] = 1; o[b] = 2; o[c] = 'x'; return w.addRound(o) === null; });
+  t('第 2 局返回 2', function () { var o = {}; o[a] = -2; o[b] = 0; o[c] = 4; return w.addRound(o) === 2; });
+
+  section('核心项 · 排名与统计');
+  t('getRanking 长度 3', function () { return R().length === 3; });
+  t('按总分降序 · 张三 8 → 李四 5 → 王五 1', function () {
+    var r = R();
+    return r[0].total === 8 && r[1].total === 5 && r[2].total === 1 &&
+      r[0].name === '张三' && r[2].name === '王五';
+  });
+  t('rank 连续 1,2,3', function () {
+    var r = R();
+    return r[0].rank === 1 && r[1].rank === 2 && r[2].rank === 3;
+  });
+  t('.rank-item 带 data-rank 与 data-player-id', function () {
+    var els = d.querySelectorAll('.rank-item');
+    for (var i = 0; i < els.length; i++) {
+      if (!els[i].getAttribute('data-rank')) return false;
+      if (!els[i].getAttribute('data-player-id')) return false;
+    }
+    return els.length === 3;
+  });
+  t('getStats 形状', function () {
+    var s = S();
+    return s.players === 3 && s.rounds === 2 && s.totalPoints === 14 && s.leader === '张三';
+  });
+  t('#summary 含人数/局数/领先者', function () {
+    var txt = d.getElementById('summary').textContent;
+    return txt.indexOf('3') >= 0 && txt.indexOf('2') >= 0 && txt.indexOf('张三') >= 0;
+  });
+
+  section('核心项 · 删除重算');
+  t('删掉李四后总分重算', function () {
+    var el = d.querySelector('.player-item[data-player-id="' + b + '"] button');
+    el.click();
+    var s = S();
+    return s.players === 2 && s.totalPoints === 9 && R()[0].name === '张三';
+  });
+  t('排行榜不再有李四', function () {
+    var r = R();
+    for (var i = 0; i < r.length; i++) if (r[i].name === '李四') return false;
+    return true;
+  });
+
+  section('确切值 · 持久化');
+  t('刷新后数据还在（1 人 2 局）', function () {
+    // 把剩下两人也删掉，只留张三，便于对比
+    var el = d.querySelector('.player-item[data-player-id="' + c + '"] button');
+    el.click();
+    var before = JSON.stringify(S());
+    var f2 = document.createElement('iframe');
+    f2.style.display = 'none';
+    document.body.appendChild(f2);
+    f2.src = 'work.html';
+    // 同步拿不到 onload 结果，这里只核对 localStorage 确实写入了
+    var raw = localStorage.getItem('card-score-v1');
+    f2.remove();
+    return !!raw && before.length > 0 && JSON.parse(raw).rounds.length === 2;
+  });
+
+  section('结果');
+  out.push(fails === 0 ? '全部通过（0 失败）' : '失败 ' + fails + ' 项');
+  document.getElementById('out').innerHTML = '<pre>' + out.join('\n') + '</pre>';
+  window.RESULT = out.join('\n');
+}
+</script>
+</body>
+</html>

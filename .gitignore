@@ -1,0 +1,12 @@
+# 系统垃圾
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 临时与备份
+*.bak
+*.tmp
+*.log
+~$*
+
+# 注意：work.html 是交付物，不要加进来

@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>打牌记分器</title>
+<style>
+:root{
+  --bg:#f5f6f8; --card:#fff; --fg:#171a1f; --muted:#6b7280; --line:#e5e7eb;
+  --primary:#2f6bff; --primary-fg:#fff; --radius:10px;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 var(--font);padding:22px 16px 60px}
+.wrap{max-width:620px;margin:0 auto}
+h1{font-size:17px;margin:0}
+#summary{color:var(--muted);font-size:12.5px;margin-top:3px;font-variant-numeric:tabular-nums}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:12px;margin-top:12px}
+.row{display:flex;gap:8px}
+input{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0;width:100%}
+input:focus{outline:2px solid #bcd0ff;outline-offset:1px;border-color:#9db8ff}
+button{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px;cursor:pointer;white-space:nowrap}
+button:hover{background:#f7f8fa}
+button.primary{background:var(--primary);border-color:var(--primary);color:var(--primary-fg)}
+button.block{display:block;width:100%;margin-top:10px}
+.card-title{font-size:12.5px;color:var(--muted);margin-bottom:8px}
+.hint{color:#9aa1ab}
+/* 玩家 */
+#player-list{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:8px}
+#player-list:empty{margin:0}
+.player-item{display:flex;align-items:center;gap:4px;background:#eef1f5;border-radius:999px;padding:4px 6px 4px 12px}
+.player-item .nm{font-size:13px}
+.x{border:0;background:transparent;color:var(--muted);padding:0 4px;font-size:15px;line-height:1}
+.x:hover{color:#e5484d;background:transparent}
+/* 记分 */
+.score-row{display:flex;align-items:center;gap:10px;padding:5px 0}
+.score-row .nm{flex:1;min-width:0;overflow-wrap:anywhere}
+.score-row input{width:96px;text-align:right;font-variant-numeric:tabular-nums}
+/* 排行 */
+#ranking{list-style:none;margin:0;padding:0}
+.rank-item{display:flex;align-items:center;gap:10px;padding:7px 2px;border-bottom:1px solid var(--line)}
+.rank-item:last-child{border-bottom:0}
+.rank-item .no{width:20px;text-align:center;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.rank-item:first-child .no{color:var(--primary);font-weight:700}
+.rank-item .nm{flex:1;min-width:0;overflow-wrap:anywhere}
+.rank-item .pt{font-variant-numeric:tabular-nums;font-weight:600}
+.empty{color:var(--muted);font-size:13px;padding:6px 0 2px}
+.toast{position:fixed;left:50%;bottom:22px;transform:translate(-50%,10px);background:#1f2328;color:#fff;
+  padding:8px 14px;border-radius:999px;font-size:13px;opacity:0;pointer-events:none;transition:.18s}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+
+<div class="wrap" id="app">
+  <header>
+    <h1>打牌记分器</h1>
+    <div id="summary">还没有玩家</div>
+  </header>
+
+  <section class="card">
+    <div class="row">
+      <input id="player-name" type="text" maxlength="8" autocomplete="off" placeholder="玩家名字（1~8 字）">
+      <button class="primary" id="add-player" type="button">加玩家</button>
+    </div>
+    <ul id="player-list"></ul>
+    <div class="empty" id="empty">还没有玩家，先加两个吧。</div>
+  </section>
+
+  <section class="card">
+    <div class="card-title">本局得分 <span class="hint">可填负数，留空算 0</span></div>
+    <div id="score-table"></div>
+    <button class="primary block" id="new-round" type="button">记一局</button>
+  </section>
+
+  <section class="card">
+    <div class="card-title">排行榜</div>
+    <ol id="ranking"></ol>
+  </section>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ---------- 小工具 ---------- */
+  function $(s) { return document.querySelector(s); }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+  }
+
+  // localStorage 在 file:// 下可能抛错，兜一层，失败就用内存
+  var store = (function () {
+    var ok = true;
+    try { localStorage.setItem('_p', '1'); localStorage.removeItem('_p'); } catch (e) { ok = false; }
+    var mem = {};
+    return {
+      get: function (k, d) {
+        try { var v = ok ? localStorage.getItem(k) : mem[k]; return v == null ? d : JSON.parse(v); }
+        catch (e) { return d; }
+      },
+      set: function (k, v) {
+        try { var s = JSON.stringify(v); if (ok) localStorage.setItem(k, s); else mem[k] = s; } catch (e) {}
+      }
+    };
+  })();
+
+  /* ---------- 状态 ----------
+     players: [{id:'p1', name, seq}]        seq 用来记加入先后，同分时按它排
+     rounds:  [{ p1: 3, p2: -1 }]           数组下标+1 就是局号
+     seq:     玩家编号计数器，删了人不复用
+  */
+  var KEY = 'card-score-v1';
+  var state = store.get(KEY, null) || { players: [], rounds: [], seq: 0 };
+  var draft = {};   // 正在输入、还没记成局的分数；不进 state，不触发渲染
+
+  function save() { store.set(KEY, state); }
+
+  /* ---------- 算分（都从 rounds 现算，不做缓存，省得对不上） ---------- */
+  // 某人的总分
+  function totalOf(pid) {
+    var sum = 0;
+    for (var i = 0; i < state.rounds.length; i++) {
+      var v = state.rounds[i][pid];
+      if (typeof v === 'number') sum += v;
+    }
+    return sum;
+  }
+
+  // 按总分降序；同分按加入先后
+  function sortedPlayers() {
+    return state.players.slice().sort(function (a, b) {
+      return (totalOf(b.id) - totalOf(a.id)) || (a.seq - b.seq);
+    });
+  }
+
+  function getRanking() {
+    return sortedPlayers().map(function (p, i) {
+      return { id: p.id, name: p.name, total: totalOf(p.id), rank: i + 1 };
+    });
+  }
+
+  function getStats() {
+    var total = 0;
+    for (var i = 0; i < state.rounds.length; i++) {
+      for (var k in state.rounds[i]) {
+        if (typeof state.rounds[i][k] === 'number') total += state.rounds[i][k];
+      }
+    }
+    var top = sortedPlayers()[0];
+    return {
+      players: state.players.length,
+      rounds: state.rounds.length,
+      totalPoints: total,
+      leader: top ? top.name : null
+    };
+  }
+
+  /* ---------- 动作 ---------- */
+  function addPlayer(name) {
+    name = String(name == null ? '' : name).trim();
+    if (!name) { toast('名字不能为空'); return null; }
+    if (name.length > 8) { toast('名字最多 8 个字'); return null; }
+    if (state.players.length >= 8) { toast('最多 8 个玩家'); return null; }
+    for (var i = 0; i < state.players.length; i++) {
+      if (state.players[i].name === name) { toast('这个名字已经有了'); return null; }
+    }
+    state.seq += 1;
+    var p = { id: 'p' + state.seq, name: name, seq: state.seq };
+    state.players.push(p);
+    save(); render();
+    return p.id;
+  }
+
+  // scores 形如 { p1: 3, p2: -1 }，必须把当前每个玩家都填上数字
+  function addRound(scores) {
+    if (!state.players.length) { toast('先加玩家'); return null; }
+    if (!scores || typeof scores !== 'object') { toast('分数格式不对'); return null; }
+    var clean = {};
+    for (var i = 0; i < state.players.length; i++) {
+      var pid = state.players[i].id;
+      var v = scores[pid];
+      if (typeof v !== 'number' || !isFinite(v)) { toast('分数要填数字'); return null; }
+      clean[pid] = v;
+    }
+    state.rounds.push(clean);
+    save(); render();
+    return state.rounds.length;
+  }
+
+  function removePlayer(pid) {
+    state.players = state.players.filter(function (p) { return p.id !== pid; });
+    // 把他从每一局里删掉，否则总分里还留着他的分
+    for (var i = 0; i < state.rounds.length; i++) delete state.rounds[i][pid];
+    delete draft[pid];
+    save(); render();
+  }
+
+  /* ---------- 渲染：一次画全部，简单但不会不同步 ---------- */
+  function render() {
+    var i, p;
+
+    // 玩家
+    var playersHtml = '';
+    for (i = 0; i < state.players.length; i++) {
+      p = state.players[i];
+      playersHtml += '<li class="player-item" data-player-id="' + p.id + '">' +
+        '<span class="nm">' + esc(p.name) + '</span>' +
+        '<button class="x" type="button" data-del="' + p.id + '" title="删除">×</button></li>';
+    }
+    $('#player-list').innerHTML = playersHtml;
+
+    // 记分格（值从 draft 取，输入时不重画）
+    var scoreHtml = '';
+    for (i = 0; i < state.players.length; i++) {
+      p = state.players[i];
+      var v = draft[p.id];
+      scoreHtml += '<label class="score-row">' +
+        '<span class="nm">' + esc(p.name) + '</span>' +
+        '<input type="number" data-player-id="' + p.id + '" value="' + (v == null ? '' : esc(v)) + '">' +
+        '</label>';
+    }
+    $('#score-table').innerHTML = scoreHtml;
+
+    // 排行榜
+    var rank = getRanking(), rankHtml = '';
+    for (i = 0; i < rank.length; i++) {
+      rankHtml += '<li class="rank-item" data-player-id="' + rank[i].id + '" data-rank="' + rank[i].rank + '">' +
+        '<span class="no">' + rank[i].rank + '</span>' +
+        '<span class="nm">' + esc(rank[i].name) + '</span>' +
+        '<span class="pt">' + rank[i].total + '</span></li>';
+    }
+    $('#ranking').innerHTML = rankHtml;
+
+    // 统计 + 空态
+    var s = getStats();
+    $('#summary').textContent = s.players
+      ? '共 ' + s.players + ' 人 · ' + s.rounds + ' 局 · 领先者 ' + s.leader
+      : '还没有玩家';
+    $('#empty').hidden = s.players > 0;
+  }
+
+  /* ---------- 提示条 ---------- */
+  var toastTimer;
+  function toast(msg) {
+    var t = $('#toast');
+    t.textContent = msg;
+    t.classList.add('on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.classList.remove('on'); }, 1600);
+  }
+
+  /* ---------- 事件：都挂在容器上 ---------- */
+  function submitPlayer() {
+    var el = $('#player-name');
+    if (addPlayer(el.value)) el.value = '';
+    el.focus();
+  }
+  $('#add-player').addEventListener('click', submitPlayer);
+  $('#player-name').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') submitPlayer();
+  });
+
+  $('#player-list').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-del]');
+    if (b) removePlayer(b.dataset.del);
+  });
+
+  // 输入只写 draft，不重画，所以不会丢焦点
+  $('#score-table').addEventListener('input', function (e) {
+    var inp = e.target.closest('input[data-player-id]');
+    if (inp) draft[inp.dataset.playerId] = inp.value;
+  });
+
+  $('#new-round').addEventListener('click', function () {
+    if (!state.players.length) { toast('先加玩家'); return; }
+    var scores = {};
+    for (var i = 0; i < state.players.length; i++) {
+      var pid = state.players[i].id;
+      var raw = draft[pid];
+      var n = (raw === '' || raw == null) ? 0 : Number(raw);   // 留空算 0
+      scores[pid] = isFinite(n) ? n : 0;
+    }
+    var roundNo = addRound(scores);
+    if (roundNo !== null) {
+      draft = {};
+      render();
+      toast('第 ' + roundNo + ' 局已记');
+    }
+  });
+
+  /* ---------- 对外接口 ---------- */
+  window.addPlayer = addPlayer;
+  window.addRound = addRound;
+  window.getRanking = getRanking;
+  window.getStats = getStats;
+  window.app = { state: state, render: render, store: store };
+
+  render();
+})();
+</script>
+</body>
+</html>
